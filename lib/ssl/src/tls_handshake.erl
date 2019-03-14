@@ -30,6 +30,7 @@
 -include("ssl_alert.hrl").
 -include("ssl_internal.hrl").
 -include("ssl_cipher.hrl").
+-include("ssl_api.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
 %% Handshake handling
@@ -47,7 +48,7 @@
 %% Handshake handling
 %%====================================================================
 %%--------------------------------------------------------------------
--spec client_hello(host(), inet:port_number(), ssl_record:connection_states(),
+-spec client_hello(ssl:host(), inet:port_number(), ssl_record:connection_states(),
 		   #ssl_options{}, integer(), atom(), boolean(), der_cert()) ->
 			  #client_hello{}.
 %%
@@ -81,13 +82,13 @@ client_hello(Host, Port, ConnectionStates,
 -spec hello(#server_hello{} | #client_hello{}, #ssl_options{},
 	    ssl_record:connection_states() | {inet:port_number(), #session{}, db_handle(),
 				    atom(), ssl_record:connection_states(), 
-				    binary() | undefined, ssl_cipher_format:key_algo()},
+				    binary() | undefined, ssl:kex_algo()},
 	    boolean()) ->
-		   {tls_record:tls_version(), session_id(), 
+		   {tls_record:tls_version(), ssl:session_id(), 
 		    ssl_record:connection_states(), alpn | npn, binary() | undefined}|
 		   {tls_record:tls_version(), {resumed | new, #session{}}, 
 		    ssl_record:connection_states(), binary() | undefined, 
-		    #hello_extensions{}, {ssl_cipher_format:hash(), ssl_cipher_format:sign_algo()} | 
+		    #hello_extensions{}, {ssl:hash(), ssl:sign_algo()} | 
                     undefined} | #alert{}.
 %%
 %% Description: Handles a received hello message
@@ -223,8 +224,6 @@ handle_client_hello_extensions(Version, Type, Random, CipherSuites,
 						     HelloExt, Version, SslOpts,
 						     Session0, ConnectionStates0, 
                                                      Renegotiation) of
-	#alert{} = Alert ->
-	    Alert;
 	{Session, ConnectionStates, Protocol, ServerHelloExt} ->
 	    {Version, {Type, Session}, ConnectionStates, Protocol, 
              ServerHelloExt, HashSign}
@@ -235,14 +234,14 @@ handle_client_hello_extensions(Version, Type, Random, CipherSuites,
 
 handle_server_hello_extensions(Version, SessionId, Random, CipherSuite,
 			Compression, HelloExt, SslOpt, ConnectionStates0, Renegotiation) ->
-    case ssl_handshake:handle_server_hello_extensions(tls_record, Random, CipherSuite,
+    try ssl_handshake:handle_server_hello_extensions(tls_record, Random, CipherSuite,
 						      Compression, HelloExt, Version,
 						      SslOpt, ConnectionStates0, 
-                                                      Renegotiation) of
-	#alert{} = Alert ->
-	    Alert;
+                                                     Renegotiation) of
 	{ConnectionStates, ProtoExt, Protocol} ->
 	    {Version, SessionId, ConnectionStates, ProtoExt, Protocol}
+    catch throw:Alert ->
+	    Alert
     end.
 %%--------------------------------------------------------------------
 enc_handshake(#hello_request{}, _Version) ->

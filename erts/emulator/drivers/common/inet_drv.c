@@ -634,9 +634,13 @@ static size_t my_strnlen(const char *s, size_t maxlen)
  * header length.  To get the header length we use
  * the pointer difference from the cmsg start pointer
  * to the CMSG_DATA(cmsg) pointer.
+ *
+ * Some platforms (seen on ppc Linux 2.6.29-3.ydl61.3)
+ * may return 0 as the cmsg_len if the cmsg is to be ignored.
  */
 #define LEN_CMSG_DATA(cmsg)                                             \
-    ((cmsg)->cmsg_len - ((char*)CMSG_DATA(cmsg) - (char*)(cmsg)))
+    ((cmsg)->cmsg_len < sizeof (struct cmsghdr) ? 0 :                   \
+     (cmsg)->cmsg_len - ((char*)CMSG_DATA(cmsg) - (char*)(cmsg)))
 #define NXT_CMSG_HDR(cmsg)                                              \
     ((struct cmsghdr*)(((char*)(cmsg)) + CMSG_SPACE(LEN_CMSG_DATA(cmsg))))
 #endif
@@ -9962,6 +9966,7 @@ static ErlDrvSSizeT tcp_inet_ctl(ErlDrvData e, unsigned int cmd,
 {
     tcp_descriptor* desc = (tcp_descriptor*)e;
 
+    cmd -= ERTS_INET_DRV_CONTROL_MAGIC_NUMBER;
     switch(cmd) {
     case INET_REQ_OPEN: { /* open socket and return internal index */
 	int domain;
@@ -12191,6 +12196,7 @@ static ErlDrvSSizeT packet_inet_ctl(ErlDrvData e, unsigned int cmd, char* buf,
     int type = SOCK_DGRAM;
     int af = AF_INET;
 
+    cmd -= ERTS_INET_DRV_CONTROL_MAGIC_NUMBER;
     switch(cmd) {
     case INET_REQ_OPEN:   /* open socket and return internal index */
 	DEBUGF(("packet_inet_ctl(%ld): OPEN\r\n", (long)desc->port)); 

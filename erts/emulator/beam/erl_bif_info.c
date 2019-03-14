@@ -2967,7 +2967,7 @@ BIF_RETTYPE system_info_1(BIF_ALIST_1)
     } else if (ERTS_IS_ATOM_STR("context_reductions", BIF_ARG_1)) {
 	BIF_RET(make_small(CONTEXT_REDS));
     } else if (ERTS_IS_ATOM_STR("kernel_poll", BIF_ARG_1)) {
-#ifdef ERTS_ENABLE_KERNEL_POLL
+#if ERTS_ENABLE_KERNEL_POLL
 	BIF_RET(am_true);
 #else
 	BIF_RET(am_false);
@@ -3139,6 +3139,8 @@ BIF_RETTYPE system_info_1(BIF_ALIST_1)
 	DECL_AM(tag);
 	BIF_RET(AM_tag);
 #endif
+    } else if (ERTS_IS_ATOM_STR("system_logger", BIF_ARG_1)) {
+        BIF_RET(erts_get_system_logger());
     }
 
     BIF_ERROR(BIF_P, BADARG);
@@ -4608,6 +4610,7 @@ BIF_RETTYPE erts_debug_set_internal_state_2(BIF_ALIST_2)
 	    }
 	}
         else if (ERTS_IS_ATOM_STR("broken_halt", BIF_ARG_1)) {
+            erts_proc_unlock(BIF_P, ERTS_PROC_LOCK_MAIN);
             broken_halt_test(BIF_ARG_2);
         }
 	else if (ERTS_IS_ATOM_STR("unique_monotonic_integer_state", BIF_ARG_1)) {
@@ -4670,6 +4673,16 @@ BIF_RETTYPE erts_debug_set_internal_state_2(BIF_ALIST_2)
 #else
             BIF_RET(am_notsup);
 #endif
+        }
+        else if (ERTS_IS_ATOM_STR("mbuf", BIF_ARG_1)) {
+            Uint sz = size_object(BIF_ARG_2);
+            ErlHeapFragment* frag = new_message_buffer(sz);
+            Eterm *hp = frag->mem;
+            Eterm copy = copy_struct(BIF_ARG_2, sz, &hp, &frag->off_heap);
+            frag->next = BIF_P->mbuf;
+            BIF_P->mbuf = frag;
+            BIF_P->mbuf_sz += sz;
+            BIF_RET(copy);
         }
     }
 

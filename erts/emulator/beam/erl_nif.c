@@ -2354,6 +2354,13 @@ static void dtor_demonitor(ErtsMonitor* mon, void* context)
     erts_proc_sig_send_demonitor(mon);
 }
 
+#ifdef DEBUG
+int erts_dbg_is_resource_dying(ErtsResource* resource)
+{
+    return resource->monitors && rmon_is_dying(resource->monitors);
+}
+#endif
+
 #  define NIF_RESOURCE_DTOR &nif_resource_dtor
 
 static int nif_resource_dtor(Binary* bin)
@@ -2694,8 +2701,12 @@ int enif_consume_timeslice(ErlNifEnv* env, int percent)
 {
     Process *proc;
     Sint reds;
+    int sched;
 
-    execution_state(env, &proc, NULL);
+    execution_state(env, &proc, &sched);
+
+    if (sched < 0)
+        return 0; /* no-op on dirty scheduler */
 
     ASSERT(is_proc_bound(env) && percent >= 1 && percent <= 100);
     if (percent < 1) percent = 1;

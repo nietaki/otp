@@ -30,6 +30,7 @@
 
 -record(sslsocket, { fd = nil, pid = nil}).
 -define(SLEEP, 1000).
+-define(DEFAULT_CURVE, secp256r1).
 
 %% For now always run locally
 run_where(_) ->
@@ -437,6 +438,37 @@ check_result(Pid, Msg) ->
 		      {got, Unexpected}},
 	    ct:fail(Reason)
     end.
+check_server_alert(Pid, Alert) ->
+    receive
+	{Pid, {error, {tls_alert, {Alert, _}}}} ->
+            ok
+    end.
+check_server_alert(Server, Client, Alert) ->
+    receive
+	{Server, {error, {tls_alert, {Alert, _}}}} ->
+	    receive
+		{Client, {error, {tls_alert, {Alert, _}}}} ->
+		    ok;
+		{Client, {error, closed}} ->
+		    ok
+	    end
+    end.
+check_client_alert(Pid, Alert) ->
+    receive
+	{Pid, {error, {tls_alert, {Alert, _}}}} ->
+            ok
+    end.
+check_client_alert(Server, Client, Alert) ->
+    receive
+	{Client, {error, {tls_alert, {Alert, _}}}} ->
+	    receive
+		{Server, {error, {tls_alert, {Alert, _}}}} ->
+		    ok;
+		{Server, {error, closed}} ->
+		    ok
+	    end
+    end.
+
 
 wait_for_result(Server, ServerMsg, Client, ClientMsg) -> 
     receive 
@@ -523,7 +555,7 @@ cert_options(Config) ->
      {client_verification_opts, [{cacertfile, ServerCaCertFile}, 
 				{certfile, ClientCertFile},  
 				{keyfile, ClientKeyFile},
-				{ssl_imp, new}]}, 
+				{verify, verify_peer}]}, 
      {client_verification_opts_digital_signature_only, [{cacertfile, ServerCaCertFile},
 				{certfile, ClientCertFileDigitalSignatureOnly},
 				{keyfile, ClientKeyFile},
@@ -618,9 +650,12 @@ make_rsa_cert_chains(UserConf, Config, Suffix) ->
     }.
 
 make_ec_cert_chains(UserConf, ClientChainType, ServerChainType, Config) ->
+    make_ec_cert_chains(UserConf, ClientChainType, ServerChainType, Config, ?DEFAULT_CURVE).
+%%
+make_ec_cert_chains(UserConf, ClientChainType, ServerChainType, Config, Curve) ->
     ClientChain = proplists:get_value(client_chain, UserConf, default_cert_chain_conf()),
     ServerChain = proplists:get_value(server_chain, UserConf, default_cert_chain_conf()),
-    CertChainConf = gen_conf(ClientChainType, ServerChainType, ClientChain, ServerChain),
+    CertChainConf = gen_conf(ClientChainType, ServerChainType, ClientChain, ServerChain, Curve),
     ClientFileBase = filename:join([proplists:get_value(priv_dir, Config), atom_to_list(ClientChainType)]),
     ServerFileBase = filename:join([proplists:get_value(priv_dir, Config), atom_to_list(ServerChainType)]),
     GenCertData = public_key:pkix_test_data(CertChainConf),
@@ -635,7 +670,11 @@ default_cert_chain_conf() ->
     %% Use only default options
     [[],[],[]].
 
-gen_conf(mix, mix, UserClient, UserServer) ->
+
+gen_conf(ClientChainType, ServerChainType, UserClient, UserServer) ->
+    gen_conf(ClientChainType, ServerChainType, UserClient, UserServer, ?DEFAULT_CURVE).
+%%
+gen_conf(mix, mix, UserClient, UserServer, _) ->
     ClientTag = conf_tag("client"),
     ServerTag = conf_tag("server"),
 
@@ -646,12 +685,12 @@ gen_conf(mix, mix, UserClient, UserServer) ->
     ServerConf = merge_chain_spec(UserServer, DefaultServer, []),
     
     new_format([{ClientTag, ClientConf}, {ServerTag, ServerConf}]);
-gen_conf(ClientChainType, ServerChainType, UserClient, UserServer) ->
+gen_conf(ClientChainType, ServerChainType, UserClient, UserServer, Curve) ->
     ClientTag = conf_tag("client"),
     ServerTag = conf_tag("server"),
 
-    DefaultClient = chain_spec(client, ClientChainType), 
-    DefaultServer = chain_spec(server, ServerChainType),
+    DefaultClient = chain_spec(client, ClientChainType, Curve),
+    DefaultServer = chain_spec(server, ServerChainType, Curve),
     
     ClientConf = merge_chain_spec(UserClient, DefaultClient, []),
     ServerConf = merge_chain_spec(UserServer, DefaultServer, []),
@@ -673,43 +712,43 @@ proplist_to_map([Head | Rest]) ->
 conf_tag(Role) ->
     list_to_atom(Role ++ "_chain").
 
-chain_spec(_Role, ecdh_rsa) ->
+chain_spec(_Role, ecdh_rsa, Curve) ->
     Digest = {digest, appropriate_sha(crypto:supports())},
-    CurveOid = hd(tls_v1:ecc_curves(0)),
+    CurveOid = pubkey_cert_records:namedCurves(Curve),
      [[Digest, {key, {namedCurve, CurveOid}}],
       [Digest, {key, hardcode_rsa_key(1)}],
       [Digest, {key, {namedCurve, CurveOid}}]];
 
-chain_spec(_Role, ecdhe_ecdsa) ->
+chain_spec(_Role, ecdhe_ecdsa, Curve) ->
     Digest = {digest, appropriate_sha(crypto:supports())},
-    CurveOid = hd(tls_v1:ecc_curves(0)),
+    CurveOid = pubkey_cert_records:namedCurves(Curve),
     [[Digest, {key, {namedCurve, CurveOid}}],
      [Digest, {key, {namedCurve, CurveOid}}],
      [Digest, {key, {namedCurve, CurveOid}}]];
 
-chain_spec(_Role, ecdh_ecdsa) ->
+chain_spec(_Role, ecdh_ecdsa, Curve) ->
     Digest = {digest, appropriate_sha(crypto:supports())},
-    CurveOid = hd(tls_v1:ecc_curves(0)),
+    CurveOid = pubkey_cert_records:namedCurves(Curve),
     [[Digest, {key, {namedCurve, CurveOid}}],
      [Digest, {key, {namedCurve, CurveOid}}],
      [Digest, {key, {namedCurve, CurveOid}}]];
-chain_spec(_Role, ecdhe_rsa) ->
+chain_spec(_Role, ecdhe_rsa, _) ->
     Digest = {digest, appropriate_sha(crypto:supports())},
     [[Digest, {key, hardcode_rsa_key(1)}],
      [Digest, {key, hardcode_rsa_key(2)}],
      [Digest, {key, hardcode_rsa_key(3)}]];
-chain_spec(_Role, ecdsa) ->
+chain_spec(_Role, ecdsa, Curve) ->
     Digest = {digest, appropriate_sha(crypto:supports())},
-    CurveOid = hd(tls_v1:ecc_curves(0)),
+    CurveOid = pubkey_cert_records:namedCurves(Curve),
     [[Digest, {key, {namedCurve, CurveOid}}],
      [Digest, {key, {namedCurve, CurveOid}}],
      [Digest, {key, {namedCurve, CurveOid}}]];
-chain_spec(_Role, rsa) ->
+chain_spec(_Role, rsa, _) ->
     Digest = {digest, appropriate_sha(crypto:supports())},
     [[Digest, {key, hardcode_rsa_key(1)}],
                                       [Digest, {key, hardcode_rsa_key(2)}],
                                       [Digest, {key, hardcode_rsa_key(3)}]];
-chain_spec(_Role, dsa) ->
+chain_spec(_Role, dsa, _) ->
     Digest = {digest, appropriate_sha(crypto:supports())},
     [[Digest, {key, hardcode_dsa_key(1)}],
      [Digest, {key, hardcode_dsa_key(2)}],
@@ -742,7 +781,7 @@ merge_spec(User, Default, [Conf | Rest], Acc) ->
 make_mix_cert(Config) ->
     Ext = x509_test:extensions([{key_usage, [digitalSignature]}]),
     Digest = {digest, appropriate_sha(crypto:supports())},
-    CurveOid = hd(tls_v1:ecc_curves(0)),
+    CurveOid = pubkey_cert_records:namedCurves(?DEFAULT_CURVE),
     Mix = proplists:get_value(mix, Config, peer_ecc),
     ClientChainType =ServerChainType = mix,
     {ClientChain, ServerChain} = mix(Mix, Digest, CurveOid, Ext),
@@ -825,7 +864,8 @@ make_rsa_cert(Config) ->
 	    Config
     end.
 appropriate_sha(CryptoSupport) ->
-    case proplists:get_bool(sha256, CryptoSupport) of
+    Hashes = proplists:get_value(hashs, CryptoSupport),
+    case lists:member(sha256, Hashes) of
 	true ->
 	    sha256;
 	false ->
@@ -1064,8 +1104,7 @@ ecc_test(Expect, COpts, SOpts, CECCOpts, SECCOpts, Config) ->
 ecc_test_error(COpts, SOpts, CECCOpts, SECCOpts, Config) ->
     {Server, Port} = start_server_ecc_error(erlang, SOpts, SECCOpts, Config),
     Client = start_client_ecc_error(erlang, Port, COpts, CECCOpts, Config),
-    Error = {error, {tls_alert, "insufficient security"}},
-    check_result(Server, Error, Client, Error).
+    check_server_alert(Server, Client, insufficient_security).
 
 start_client(openssl, Port, ClientOpts, Config) ->
     Cert = proplists:get_value(certfile, ClientOpts),
@@ -1073,11 +1112,11 @@ start_client(openssl, Port, ClientOpts, Config) ->
     CA = proplists:get_value(cacertfile, ClientOpts),
     Version = ssl_test_lib:protocol_version(Config),
     Exe = "openssl",
-    Args = ["s_client", "-verify", "2", "-port", integer_to_list(Port),
+    Args0 = ["s_client", "-verify", "2", "-port", integer_to_list(Port),
 	    ssl_test_lib:version_flag(Version),
 	    "-cert", Cert, "-CAfile", CA,
 	    "-key", Key, "-host","localhost", "-msg", "-debug"],
-
+    Args = maybe_force_ipv4(Args0),
     OpenSslPort = ssl_test_lib:portable_open_port(Exe, Args), 
     true = port_command(OpenSslPort, "Hello world"),
     OpenSslPort;
@@ -1091,6 +1130,18 @@ start_client(erlang, Port, ClientOpts, Config) ->
 			       {mfa, {ssl_test_lib, check_key_exchange_send_active, [KeyEx]}},
 			       {options, [{verify, verify_peer} | ClientOpts]}]).
 
+%% Workaround for running tests on machines where openssl
+%% s_client would use an IPv6 address with localhost. As
+%% this test suite and the ssl application is not prepared
+%% for that we have to force s_client to use IPv4 if
+%% OpenSSL supports IPv6.
+maybe_force_ipv4(Args0) ->
+    case is_ipv6_supported() of
+        true ->
+            Args0 ++ ["-4"];
+        false ->
+            Args0
+    end.
 
 start_client_ecc(erlang, Port, ClientOpts, Expect, ECCOpts, Config) ->
     {ClientNode, _, Hostname} = ssl_test_lib:run_where(Config),
@@ -1583,35 +1634,22 @@ v_1_2_check(ecdh_rsa, ecdh_ecdsa) ->
 v_1_2_check(_, _) ->
     false.
 
-send_recv_result_active(Socket) ->
-    ssl:send(Socket, "Hello world"),
-    receive
-	{ssl, Socket, "H"} ->
-	    receive
-		{ssl, Socket, "ello world"} ->
-		    ok
-	    end;
-	{ssl, Socket, "Hello world"} ->
-	    ok
-    end.
-
 send_recv_result(Socket) ->
-    ssl:send(Socket, "Hello world"),
-    {ok,"Hello world"} = ssl:recv(Socket, 11),
+    Data =  "Hello world",
+    ssl:send(Socket, Data),
+    {ok, Data} = ssl:recv(Socket, length(Data)),
+    ok.
+
+send_recv_result_active(Socket) ->
+    Data =  "Hello world",
+    ssl:send(Socket, Data),
+    Data = active_recv(Socket, length(Data)),
     ok.
 
 send_recv_result_active_once(Socket) ->
-    ssl:send(Socket, "Hello world"),
-    receive
-	{ssl, Socket, "H"} ->
-	    ssl:setopts(Socket, [{active, once}]),
-	    receive
-		{ssl, Socket, "ello world"} ->
-		    ok
-	    end;
-	{ssl, Socket, "Hello world"} ->
-	    ok
-    end.
+    Data = "Hello world",
+    ssl:send(Socket, Data),
+    active_once_recv_list(Socket, length(Data)).
 
 active_recv(Socket, N) ->
     active_recv(Socket, N, []).
@@ -1622,6 +1660,55 @@ active_recv(Socket, N, Acc) ->
     receive 
 	{ssl, Socket, Bytes} ->
             active_recv(Socket, N-length(Bytes),  Acc ++ Bytes)
+    end.
+
+active_once_recv(_Socket, 0) ->
+    ok;
+active_once_recv(Socket, N) ->
+    receive 
+	{ssl, Socket, Bytes} ->
+            ssl:setopts(Socket, [{active, once}]),
+            active_once_recv(Socket, N-byte_size(Bytes))
+    end.
+
+active_once_recv_list(_Socket, 0) ->
+    ok;
+active_once_recv_list(Socket, N) ->
+    receive 
+	{ssl, Socket, Bytes} ->
+            ssl:setopts(Socket, [{active, once}]),
+            active_once_recv_list(Socket, N-length(Bytes))
+    end.
+recv_disregard(_Socket, 0) ->
+    ok;
+recv_disregard(Socket, N) ->
+    {ok, Bytes} = ssl:recv(Socket, 0),
+    recv_disregard(Socket, N-byte_size(Bytes)).
+
+active_disregard(_Socket, 0) ->
+    ok;
+active_disregard(Socket, N) ->
+    receive 
+	{ssl, Socket, Bytes} ->
+            active_disregard(Socket, N-byte_size(Bytes))
+    end.
+active_once_disregard(_Socket, 0) ->
+    ok;
+active_once_disregard(Socket, N) ->
+    receive 
+	{ssl, Socket, Bytes} ->
+            ssl:setopts(Socket, [{active, once}]),
+            active_once_disregard(Socket, N-byte_size(Bytes))
+    end.
+
+is_ipv6_supported() ->
+    case os:cmd("openssl version") of
+        "OpenSSL 0.9.8" ++ _ -> % Does not support IPv6
+            false;
+        "OpenSSL 1.0" ++ _ ->   % Does not support IPv6
+            false;
+        _ ->
+            true
     end.
 
 is_sane_ecc(openssl) ->
@@ -2161,3 +2248,98 @@ server_msg(Server, ServerMsg) ->
 	Unexpected ->
 	    ct:fail(Unexpected)
     end.
+
+session_id(Socket) ->
+    {ok, [{session_id, ID}]} = ssl:connection_information(Socket, [session_id]),
+    ID.
+    
+reuse_session(ClientOpts, ServerOpts, Config) ->
+    {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
+    
+    Server0 =
+	ssl_test_lib:start_server([{node, ServerNode}, {port, 0},
+				   {from, self()},
+				   {mfa, {ssl_test_lib, no_result, []}},
+				   {tcp_options, [{active, false}]},
+				   {options, ServerOpts}]),
+    Port0 = ssl_test_lib:inet_port(Server0),
+    
+    Client0 = ssl_test_lib:start_client([{node, ClientNode},
+                                         {port, Port0}, {host, Hostname},
+                                         {mfa, {ssl_test_lib, session_id, []}},
+                                         {from, self()},  {options, [{reuse_sessions, save} | ClientOpts]}]),
+    Server0 ! listen,
+    
+    Client1 = ssl_test_lib:start_client([{node, ClientNode},
+                                         {port, Port0}, {host, Hostname},
+                                         {mfa, {ssl_test_lib, session_id, []}},
+                                         {from, self()},  {options, ClientOpts}]),    
+
+    SID = receive
+              {Client0, Id0} ->
+                  Id0
+          end,
+       
+    receive
+        {Client1, SID} ->
+            ok
+    after ?SLEEP ->
+              ct:fail(session_not_reused)
+    end,
+  
+    Server0 ! listen,
+    
+    Client2 =
+        ssl_test_lib:start_client([{node, ClientNode},
+                                   {port, Port0}, {host, Hostname},
+                                   {mfa, {ssl_test_lib, session_id, []}},
+                                   {from, self()},  {options, [{reuse_sessions, false}
+         					  | ClientOpts]}]),   
+    receive
+         {Client2, SID} ->
+            ct:fail(session_reused_when_session_reuse_disabled_by_client);
+         {Client2, _} ->
+            ok
+    end,
+    
+    ssl_test_lib:close(Server0),
+    ssl_test_lib:close(Client0),
+    ssl_test_lib:close(Client1),
+    ssl_test_lib:close(Client2),
+    
+    Server1 =
+	ssl_test_lib:start_server([{node, ServerNode}, {port, 0},
+				   {from, self()},
+				   {mfa, {ssl_test_lib, no_result, []}},
+				   {tcp_options, [{active, false}]},
+				   {options, [{reuse_sessions, false} |ServerOpts]}]),
+    Port1 = ssl_test_lib:inet_port(Server1),
+    
+    Client3 = ssl_test_lib:start_client([{node, ClientNode},
+                                         {port, Port1}, {host, Hostname},
+                                         {mfa, {ssl_test_lib, session_id, []}},
+                                         {from, self()},  {options, [{reuse_sessions, save} | ClientOpts]}]),
+    SID1 = receive
+               {Client3, Id3} ->
+                   Id3
+           end,
+
+    Server1 ! listen,
+    
+    Client4 =
+        ssl_test_lib:start_client([{node, ClientNode},
+                                   {port, Port1}, {host, Hostname},
+                                   {mfa, {ssl_test_lib, session_id, []}},
+                                   {from, self()},  {options, ClientOpts}]),   
+   
+    receive
+        {Client4, SID1} ->
+            ct:fail(session_reused_when_session_reuse_disabled_by_server);
+        {Client4, _} ->
+            ok
+    end,
+    
+    ssl_test_lib:close(Server1),
+    ssl_test_lib:close(Client3),
+    ssl_test_lib:close(Client4).
+    

@@ -1946,7 +1946,7 @@ do_allocate_logger_message(Eterm gleader, ErtsMonotonicTime *ts, Eterm *pid,
     else
         sz += MAP4_SZ /* metadata map w gl w pid*/;
 
-    *ts = ERTS_MONOTONIC_TO_USEC(erts_get_monotonic_time(NULL) + erts_get_time_offset());
+    *ts = ERTS_MONOTONIC_TO_USEC(erts_os_system_time());
     erts_bld_sint64(NULL, &sz, *ts);
 
     *bp = new_message_buffer(sz);
@@ -3681,30 +3681,47 @@ erts_unicode_list_to_buf_len(Eterm list)
     }
 }
 
-/*
-** Convert an integer to a byte list
-** return pointer to converted stuff (need not to be at start of buf!)
-*/
-char* Sint_to_buf(Sint n, struct Sint_buf *buf)
+/* Prints an integer in the given base, returning the number of digits printed.
+ *
+ * (*buf) is a pointer to the buffer, and is set to the start of the string
+ * when returning. */
+int Sint_to_buf(Sint n, int base, char **buf, size_t buf_size)
 {
-    char* p = &buf->s[sizeof(buf->s)-1];
-    int sign = 0;
+    char *p = &(*buf)[buf_size - 1];
+    int sign = 0, size = 0;
 
-    *p-- = '\0'; /* null terminate */
-    if (n == 0)
-	*p-- = '0';
-    else if (n < 0) {
-	sign = 1;
-	n = -n;
+    ASSERT(base >= 2 && base <= 36);
+
+    if (n == 0) {
+        *p-- = '0';
+        size++;
+    } else if (n < 0) {
+        sign = 1;
+        n = -n;
     }
 
     while (n != 0) {
-	*p-- = (n % 10) + '0';
-	n /= 10;
+        int digit = n % base;
+
+        if (digit < 10) {
+            *p-- = '0' + digit;
+        } else {
+            *p-- = 'A' + (digit - 10);
+        }
+
+        size++;
+
+        n /= base;
     }
-    if (sign)
-	*p-- = '-';
-    return p+1;
+
+    if (sign) {
+        *p-- = '-';
+        size++;
+    }
+
+    *buf = p + 1;
+
+    return size;
 }
 
 /* Build a list of integers in some safe memory area
@@ -4771,58 +4788,3 @@ erts_ptr_id(void *ptr)
     return ptr;
 }
 
-#ifdef DEBUG
-/*
- * Handy functions when using a debugger - don't use in the code!
- */
-
-void upp(byte *buf, size_t sz)
-{
-    bin_write(ERTS_PRINT_STDERR, NULL, buf, sz);
-}
-
-void pat(Eterm atom)
-{
-    upp(atom_tab(atom_val(atom))->name,
-	atom_tab(atom_val(atom))->len);
-}
-
-
-void pinfo()
-{
-    process_info(ERTS_PRINT_STDOUT, NULL);
-}
-
-
-void pp(p)
-Process *p;
-{
-    if(p)
-	print_process_info(ERTS_PRINT_STDERR, NULL, p);
-}
-
-void ppi(Eterm pid)
-{
-    pp(erts_proc_lookup(pid));
-}
-
-void td(Eterm x)
-{
-    erts_fprintf(stderr, "%T\n", x);
-}
-
-void
-ps(Process* p, Eterm* stop)
-{
-    Eterm* sp = STACK_START(p) - 1;
-
-    if (stop <= STACK_END(p)) {
-        stop = STACK_END(p) + 1;
-    }
-
-    while(sp >= stop) {
-	erts_printf("%p: %.75T\n", sp, *sp);
-	sp--;
-    }
-}
-#endif

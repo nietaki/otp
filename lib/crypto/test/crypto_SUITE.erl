@@ -99,6 +99,8 @@ groups() ->
                  {group, rsa},
                  {group, dss},
                  {group, ecdsa},
+                 {group, no_ed25519},
+                 {group, no_ed448},
                  {group, dh},
                  {group, ecdh},
                  {group, no_srp},
@@ -113,8 +115,8 @@ groups() ->
                  {group, no_blowfish_cfb64},
                  {group, no_blowfish_ofb64},
                  {group, aes_cbc128},
-                 {group, aes_cfb8},
-                 {group, aes_cfb128},
+                 {group, no_aes_cfb8},
+                 {group, no_aes_cfb128},
                  {group, aes_cbc256},
                  {group, no_aes_ige256},
                  {group, no_rc2_cbc},
@@ -156,7 +158,7 @@ groups() ->
                  ]},
      {dh, [], [generate_compute,
                compute_bug]},
-     {ecdh, [], [generate_all_supported, compute, generate]},
+     {ecdh, [], [use_all_elliptic_curves, compute, generate]},
      {srp, [], [generate_compute]},
      {des_cbc, [], [block]},
      {des_cfb, [], [block]},
@@ -183,8 +185,16 @@ groups() ->
      {chacha20, [], [stream]},
      {poly1305, [], [poly1305]},
      {aes_cbc, [], [block]},
+     {no_aes_cfb8,[], [no_support, no_block]},
+     {no_aes_cfb128,[], [no_support, no_block]},
      {no_md4, [], [no_support, no_hash]},
      {no_md5, [], [no_support, no_hash, no_hmac]},
+     {no_ed25519, [], [no_support, no_sign_verify
+                %% Does not work yet:  ,public_encrypt, private_encrypt
+                 ]},
+     {no_ed448, [], [no_support, no_sign_verify
+                %% Does not work yet:  ,public_encrypt, private_encrypt
+                 ]},
      {no_ripemd160, [], [no_support, no_hash]},
      {no_srp, [], [no_support, no_generate_compute]},
      {no_des_cbc, [], [no_support, no_block]},
@@ -251,7 +261,7 @@ init_per_group(fips, Config) ->
 		    enabled = crypto:info_fips(),
 		    FIPSConfig;
 		false ->
-		    {skip, "Failed to enable FIPS mode"}
+		    {fail, "Failed to enable FIPS mode"}
 	    end;
         not_supported ->
             {skip, "FIPS mode not supported"}
@@ -401,17 +411,6 @@ block() ->
 block(Config) when is_list(Config) ->
     Fips = proplists:get_bool(fips, Config),
     Type = ?config(type, Config),
-    %% See comment about EVP_CIPHER_CTX_set_key_length in
-    %% block_crypt_nif in crypto.c.
-    case {Fips, Type} of
-	{true, aes_cfb8} ->
-	    throw({skip, "Cannot test aes_cfb8 in FIPS mode because of key length issue"});
-	{true, aes_cfb128} ->
-	    throw({skip, "Cannot test aes_cfb128 in FIPS mode because of key length issue"});
-	_ ->
-	    ok
-    end,
-
     Blocks = lazy_eval(proplists:get_value(block, Config)),
     lists:foreach(fun block_cipher/1, Blocks),
     lists:foreach(fun block_cipher/1, block_iolistify(Blocks)),
@@ -500,6 +499,13 @@ sign_verify(Config) when is_list(Config) ->
     SignVerify = proplists:get_value(sign_verify, Config),
     lists:foreach(fun do_sign_verify/1, SignVerify).
 
+%%--------------------------------------------------------------------
+no_sign_verify() ->
+    [{doc, "Test disabled sign/verify digital signatures"}].
+no_sign_verify(Config) when is_list(Config) ->
+    [SignVerifyHd|_] = proplists:get_value(sign_verify, Config),
+    notsup(fun do_sign_verify/1, [SignVerifyHd]).
+
 %%-------------------------------------------------------------------- 
 public_encrypt() ->
      [{doc, "Test public_encrypt/decrypt "}].
@@ -563,32 +569,43 @@ compute(Config) when is_list(Config) ->
     Gen = proplists:get_value(compute, Config),
     lists:foreach(fun do_compute/1, Gen).
 %%--------------------------------------------------------------------
-generate_all_supported() ->
-    [{doc, " Test that all curves from crypto:ec_curves/0 returns two binaries"}].
-generate_all_supported(_Config) ->
+use_all_elliptic_curves() ->
+    [{doc, " Test that all curves from crypto:ec_curves/0"}].
+use_all_elliptic_curves(_Config) ->
+    Msg = <<"hello world!">>,
+    Sups = crypto:supports(),
+    Curves = proplists:get_value(curves, Sups),
+    Hashs = proplists:get_value(hashs, Sups),
+    ct:log("Lib: ~p~nFIPS: ~p~nCurves:~n~p~nHashs: ~p", [crypto:info_lib(),
+                                                         crypto:info_fips(),
+                                                         Curves,
+                                                         Hashs]),
     Results =
-        [try
-             crypto:generate_key(ecdh, C)
-         of
-             {B1,B2} when is_binary(B1) and is_binary(B2) ->
-                 %% That is, seems like it works as expected.
-                 {ok,C};
-             Err ->
-                 ct:log("ERROR: Curve ~p generated ~p", [C,Err]),
-                 {error,{C,Err}}
-         catch
-             Cls:Err:Stack ->
-                 ct:log("ERROR: Curve ~p exception ~p:~p~n~p", [C,Cls,Err,Stack]),
-                 {error,{C,{Cls,Err}}}
-         end
-         || C <- crypto:ec_curves(),
-            not lists:member(C, [ed25519, ed448])
+        [{{Curve,Hash},
+          try
+              {Pub,Priv} = crypto:generate_key(ecdh, Curve),
+              true = is_binary(Pub),
+              true = is_binary(Priv),
+              Sig = crypto:sign(ecdsa, Hash, Msg, [Priv, Curve]),
+              crypto:verify(ecdsa, Hash, Msg, Sig, [Pub, Curve])
+          catch
+              C:E ->
+                  {C,E}
+          end}
+         || Curve <- Curves -- [ed25519, ed448, x25519, x448, ipsec3, ipsec4],
+            Hash <- Hashs -- [md4, md5, ripemd160, sha3_224, sha3_256, sha3_384, sha3_512]
         ],
-    OK = [C || {ok,C} <- Results],
-    ct:log("Ok (len=~p): ~p", [length(OK), OK]),
-    false = lists:any(fun({error,_}) -> true;
-                         (_) -> false
-                      end, Results).
+    Fails =
+        lists:filter(fun({_,true}) -> false;
+                        (_) -> true
+                     end, Results),
+    case Fails of
+        [] ->
+            ok;
+        _ ->
+            ct:log("Fails:~n~p",[Fails]),
+            ct:fail("Bad curve(s)",[])
+    end.
 
 %%--------------------------------------------------------------------
 generate() ->

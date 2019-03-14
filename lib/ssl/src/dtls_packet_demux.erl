@@ -144,11 +144,11 @@ handle_info({Transport, Socket, IP, InPortNo, _} = Msg, #state{listener = Socket
 %% UDP socket does not have a connection and should not receive an econnreset
 %% This does however happens on some windows versions. Just ignoring it
 %% appears to make things work as expected! 
-handle_info({Error, Socket, econnreset = Error}, #state{listener = Socket, transport = {_,_,_, udp_error}} = State) ->
+handle_info({udp_error, Socket, econnreset = Error}, #state{listener = Socket, transport = {_,_,_, udp_error}} = State) ->
     Report = io_lib:format("Ignore SSL UDP Listener: Socket error: ~p ~n", [Error]),
     error_logger:info_report(Report),
     {noreply, State};
-handle_info({Error, Socket, Error}, #state{listener = Socket, transport = {_,_,_, Error}} = State) ->
+handle_info({ErrorTag, Socket, Error}, #state{listener = Socket, transport = {_,_,_, ErrorTag}} = State) ->
     Report = io_lib:format("SSL Packet muliplxer shutdown: Socket error: ~p ~n", [Error]),
     error_logger:info_report(Report),
     {noreply, State#state{close=true}};
@@ -297,6 +297,9 @@ do_set_emulated_opts([], Opts) ->
     Opts;
 do_set_emulated_opts([{mode, Value} | Rest], Opts) ->
     do_set_emulated_opts(Rest,  Opts#socket_options{mode = Value}); 
+do_set_emulated_opts([{active, N0} | Rest], Opts=#socket_options{active = Active}) when is_integer(N0) ->
+    N = tls_socket:update_active_n(N0, Active),
+    do_set_emulated_opts(Rest,  Opts#socket_options{active = N});
 do_set_emulated_opts([{active, Value} | Rest], Opts) ->
     do_set_emulated_opts(Rest,  Opts#socket_options{active = Value}).
 
